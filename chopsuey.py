@@ -135,51 +135,116 @@ class VocalChopExtractor:
             result = self.whisper_model.transcribe(
                 str(audio_path),
                 language="en",
-                without_timestamps=True,
                 fp16=False  # Disable FP16 on CPU
             )
+            
+            # Ensure we have a valid segments structure
+            if 'segments' not in result:
+                result['segments'] = [{'text': '', 'start': 0, 'end': 0}]
+            
+            print("Transcription completed successfully")
             return result
             
         except Exception as e:
             print(f"Error during transcription: {e}")
-            raise
+            # Return a basic transcription structure even if there's an error
+            return {'segments': [{'text': '', 'start': 0, 'end': 0, 'words': []}]}
 
     def analyze_for_chops(self, vocals_path, transcription, metadata):
         """Analyze vocals for interesting chops"""
-        y, sr = librosa.load(vocals_path)
+        try:
+            # Load audio with original sample rate
+            y, sr = librosa.load(vocals_path, sr=None)  # Keep original sample rate
+            audio = AudioSegment.from_file(vocals_path)  # Load with original properties
+            
+            # Detect non-silent segments
+            nonsilent_ranges = detect_nonsilent(audio, 
+                                              min_silence_len=100,
+                                              silence_thresh=-40)
 
-        # Detect non-silent segments
-        audio = AudioSegment.from_wav(vocals_path)
-        nonsilent_ranges = detect_nonsilent(audio, 
-                                            min_silence_len=100,
-                                            silence_thresh=-40)
+            chops = []
 
-        chops = []
+            # Ensure we have word-level timestamps
+            if not transcription.get('segments') or not transcription['segments'] or \
+               not transcription['segments'][0].get('words'):
+                print("Warning: No word-level timestamps in transcription. Using segment-level instead.")
+                # Fall back to segment-level timestamps
+                for segment in transcription.get('segments', []):
+                    if 'start' in segment and 'end' in segment:
+                        start_sec = segment['start']
+                        end_sec = segment['end']
+                        text = segment.get('text', '').strip()
+                        
+                        # Convert time to samples using the original sample rate
+                        start_sample = int(start_sec * sr)
+                        end_sample = int(end_sec * sr)
+                        
+                        # Ensure we don't go out of bounds
+                        if end_sample > len(y):
+                            end_sample = len(y)
+                        if start_sample >= end_sample:
+                            continue
+                            
+                        # Extract audio segment using numpy array slicing
+                        segment_audio = y[start_sample:end_sample]
+                        
+                        # Only process if we have audio data
+                        if len(segment_audio) > 0:
+                            chop_type = self._classify_chop(segment_audio, sr, text)
+                            
+                            if chop_type:
+                                chops.append({
+                                    'start': start_sec,
+                                    'end': end_sec,
+                                    'text': text,
+                                    'type': chop_type,
+                                    'audio_data': segment_audio,
+                                    'sample_rate': sr  # Store sample rate for saving
+                                })
+                return chops
 
-        # Analyze each segment
-        for start_ms, end_ms in nonsilent_ranges:
-            start_sec = start_ms / 1000
-            end_sec = end_ms / 1000
-
-            # Find corresponding text
-            text = self._get_text_for_timestamp(transcription, start_sec, end_sec)
-
-            # Analyze audio characteristics
-            segment_audio = y[int(start_sec * sr):int(end_sec * sr)]
-
-            # Check for notable characteristics
-            chop_type = self._classify_chop(segment_audio, sr, text)
-
-            if chop_type:
-                chops.append({
-                    'start': start_sec,
-                    'end': end_sec,
-                    'text': text,
-                    'type': chop_type,
-                    'audio_data': segment_audio
-                    })
-
-        return chops
+            # Process with word-level timestamps if available
+            for segment in transcription['segments']:
+                for word in segment.get('words', []):
+                    if 'start' in word and 'end' in word:
+                        start_sec = word['start']
+                        end_sec = word['end']
+                        text = word.get('word', '').strip()
+                        
+                        # Convert time to samples using the original sample rate
+                        start_sample = int(start_sec * sr)
+                        end_sample = int(end_sec * sr)
+                        
+                        # Ensure we don't go out of bounds
+                        if end_sample > len(y):
+                            end_sample = len(y)
+                        if start_sample >= end_sample:
+                            continue
+                            
+                        # Extract audio segment using numpy array slicing
+                        segment_audio = y[start_sample:end_sample]
+                        
+                        # Only process if we have audio data
+                        if len(segment_audio) > 0:
+                            chop_type = self._classify_chop(segment_audio, sr, text)
+                            
+                            if chop_type:
+                                chops.append({
+                                    'start': start_sec,
+                                    'end': end_sec,
+                                    'text': text,
+                                    'type': chop_type,
+                                    'audio_data': segment_audio,
+                                    'sample_rate': sr  # Store sample rate for saving
+                                })
+            
+            return chops
+            
+        except Exception as e:
+            print(f"Error in analyze_for_chops: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
     def _classify_chop(self, audio, sr, text):
         """Classify the type of vocal chop"""
@@ -218,19 +283,19 @@ class VocalChopExtractor:
 
         for i, chop in enumerate(chops):
             timestamp = f"{int(chop['start'])}s-{int(chop['end'])}s"
-            safe_text = chop['text'][:20].replace(' ', '_').replace('/', '_')
+            safe_text = chop['text'][:20].replace(' ', '_').replace('/', '_') if chop['text'] else 'no_text'
 
             filename = f"{i+1}_{timestamp}_{chop['type']}_{safe_text}.wav"
 
             # Save audio
             import soundfile as sf
-            sf.write(artist_folder / filename, chop['audio_data'], 22050)
+            sf.write(artist_folder / filename, chop['audio_data'], chop['sample_rate'])
 
             # Save metadata
             meta = {
                     'artist': metadata['artist'],
                     'song': metadata['title'],
-                    'source_file': source_file_str,  # Use the string version here
+                    'source_file': source_file_str,
                     'timestamp': timestamp,
                     'duration': chop['end'] - chop['start'],
                     'text': chop['text'],
@@ -240,6 +305,8 @@ class VocalChopExtractor:
 
             with open(artist_folder / f"{i+1}_metadata.json", 'w') as f:
                 json.dump(meta, f, indent=2)
+                
+        return str(artist_folder.absolute())
 
     def _get_usage_suggestions(self, chop_type):
         """Suggest usage based on chop type"""

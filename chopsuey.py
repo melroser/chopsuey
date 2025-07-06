@@ -239,78 +239,152 @@ class VocalChopExtractor:
                 }
         return suggestions.get(chop_type, ['general sample'])
 
-@click.command()
-@click.argument('zip_path', type=click.Path(exists=True))
-@click.option('--output', '-o', default='output_chops', help='Output directory')
-def main(zip_path, output):
-    """Extract vocal chops from a ZIP file of audio tracks"""
-    extractor = VocalChopExtractor(output)
-
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        temp_dir = Path('temp_extract')
-        temp_dir.mkdir(exist_ok=True)
-        zip_ref.extractall(temp_dir)
-
-        # Get all audio files, excluding system files and __MACOSX directory
-        audio_files = []
-        for ext in ['*.mp3', '*.wav', '*.flac']:
-            audio_files.extend([f for f in temp_dir.rglob(ext) 
-                             if not any(part.startswith(('.', '_')) for part in f.parts) and 
-                             not f.parent.name == '__MACOSX'])
-
-        for audio_file in audio_files:
-            try:
-                click.echo(f"\nProcessing: {audio_file.name}")
-
-                # Skip system files and hidden files
-                if any(part.startswith(('.', '_')) for part in audio_file.parts):
-                    click.echo(f"  Skipping system file: {audio_file}")
-                    continue
-
-                # Skip files in __MACOSX directory
-                if "__MACOSX" in str(audio_file):
-                    click.echo(f"  Skipping macOS system file: {audio_file}")
-                    continue
-
-                # Identify song
-                try:
-                    metadata = extractor.identify_song(audio_file)
-                    click.echo(f"  Identified as: {metadata['artist']} - {metadata['title']}")
-                except Exception as e:
-                    click.echo(f"  Could not identify song: {e}")
-                    metadata = {'artist': 'Unknown', 'title': audio_file.stem}
-
-                # Separate vocals
-                click.echo("  Separating vocals...")
-                try:
-                    vocals_path = extractor.separate_vocals(audio_file)
-                    
-                    # Transcribe
-                    click.echo("  Transcribing lyrics...")
-                    transcription = extractor.transcribe_lyrics(vocals_path)
-
-                    # Analyze for chops
-                    click.echo("  Analyzing for vocal chops...")
-                    chops = extractor.analyze_for_chops(vocals_path, transcription, metadata)
-
-                    # Save results
-                    click.echo(f"  Found {len(chops)} interesting chops")
-                    extractor.save_chops(chops, metadata, str(audio_file))
-                    
-                except Exception as e:
-                    click.echo(f"  Error processing {audio_file.name}: {str(e)}", err=True)
-                    continue
-                    
-            except Exception as e:
-                click.echo(f"  Unexpected error processing {audio_file.name}: {str(e)}", err=True)
-                continue
-
-    # Clean up temporary files
+def process_audio_file(extractor, audio_path, output_dir):
+    """Process a single audio file and return the output directory."""
     try:
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
-    except Exception as e:
-        click.echo(f"Warning: Could not clean up temporary files: {e}")
+        print(f"\nProcessing: {audio_path}")
+        # Get song metadata
+        metadata = extractor.identify_song(audio_path)
+        print(f"Identified: {metadata['artist']} - {metadata['title']}")
+
+        # Separate vocals
+        print("Separating vocals...")
+        vocals_path = extractor.separate_vocals(audio_path)
         
+        # Transcribe lyrics
+        print("Transcribing lyrics...")
+        transcription = extractor.transcribe_lyrics(vocals_path)
+        
+        # Find vocal chops
+        print("Analyzing for vocal chops...")
+        chops = extractor.analyze_for_chops(vocals_path, transcription, metadata)
+        
+        # Save chops
+        output_path = extractor.save_chops(chops, metadata, output_dir)
+        print(f"Saved {len(chops)} vocal chops to: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"Error processing {audio_path}: {str(e)}")
+        return None
+
+def process_directory(extractor, input_path, output_dir):
+    """Process all audio files in a directory."""
+    input_path = Path(input_path)
+    if not input_path.exists():
+        print(f"Error: Directory not found: {input_path}")
+        return []
+        
+    audio_files = []
+    for ext in ['*.wav', '*.mp3', '*.m4a', '*.flac', '*.ogg']:
+        audio_files.extend(input_path.glob(ext))
+    
+    if not audio_files:
+        print(f"No audio files found in: {input_path}")
+        return []
+        
+    print(f"Found {len(audio_files)} audio files to process...")
+    results = []
+    for audio_file in audio_files:
+        result = process_audio_file(extractor, audio_file, output_dir)
+        if result:
+            results.append(result)
+    return results
+
+def process_zip(extractor, zip_path, output_dir):
+    """Process all audio files in a zip archive."""
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Extract to a temporary directory
+            temp_dir = Path(output_dir) / "temp_extract"
+            zip_ref.extractall(temp_dir)
+            print(f"Extracted {len(zip_ref.namelist())} files from {zip_path}")
+            
+            # Process all audio files in the extracted directory
+            return process_directory(extractor, temp_dir, output_dir)
+    except Exception as e:
+        print(f"Error processing zip file {zip_path}: {str(e)}")
+        return []
+
+def find_audio_or_zip(directory):
+    """Find a single audio file or zip file in the directory."""
+    audio_extensions = ['.wav', '.mp3', '.m4a', '.flac', '.ogg']
+    
+    # Look for zip files first
+    zip_files = list(Path(directory).glob('*.zip'))
+    if len(zip_files) == 1:
+        return zip_files[0]
+    elif len(zip_files) > 1:
+        print("Multiple zip files found. Please specify which one to process.")
+        return None
+    
+    # Look for audio files
+    audio_files = []
+    for ext in audio_extensions:
+        audio_files.extend(Path(directory).glob(f'*{ext}'))
+    
+    if len(audio_files) == 1:
+        return audio_files[0]
+    elif len(audio_files) > 1:
+        print("Multiple audio files found. Please specify which one to process.")
+        return None
+    
+    print("No audio files or zip archives found in the current directory.")
+    return None
+
+@click.command()
+@click.argument('input_path', type=click.Path(exists=True), required=False)
+@click.option('--output', '-o', 'output_dir', default='output_chops', 
+              help='Output directory for vocal chops')
+def main(input_path=None, output_dir='output_chops'):
+    """Extract vocal chops from audio files.
+    
+    If no INPUT_PATH is provided, looks for a single .zip or audio file in the current directory.
+    Otherwise, processes the specified file or directory.
+    """
+    # Create output directory if it doesn't exist
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize extractor
+    extractor = VocalChopExtractor(output_dir=output_dir)
+    
+    # Handle different input types
+    if input_path is None:
+        print("No input path provided, looking for audio or zip file in current directory...")
+        input_path = find_audio_or_zip(Path.cwd())
+        if input_path is None:
+            print("Please specify an input file or ensure there's exactly one audio/zip file in the directory.")
+            return
+        print(f"Found and processing: {input_path}")
+    else:
+        input_path = Path(input_path)
+    
+    results = []
+    try:
+        if input_path.is_file():
+            if input_path.suffix.lower() == '.zip':
+                results = process_zip(extractor, input_path, output_dir)
+            else:
+                result = process_audio_file(extractor, input_path, output_dir)
+                if result:
+                    results.append(result)
+        elif input_path.is_dir():
+            results = process_directory(extractor, input_path, output_dir)
+        else:
+            print(f"Error: Unsupported input type: {input_path}")
+            return
+            
+        # Print summary
+        if results:
+            print("\nProcessing complete!")
+            print(f"Processed {len(results)} items. Output available in: {output_dir.absolute()}")
+        else:
+            print("No audio files were processed.")
+            
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
 if __name__ == '__main__':
     main()

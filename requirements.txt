@@ -1,0 +1,10 @@
+# Core dependencies
+python-dotenv>=1.0.0
+librosa>=0.9.2
+numpy>=1.21.0
+whisper-openai>=1.0.0
+pyacoustid>=1.2.2
+requests>=2.28.0
+pydub>=0.25.1
+demucs>=4.0.0
+click>=8.1.3

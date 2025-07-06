@@ -11,6 +11,15 @@ import acoustid
 import requests
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get API key from environment variables
+ACOUSTID_API_KEY = os.getenv('ACOUSTID_API_KEY')
+if not ACOUSTID_API_KEY:
+    raise ValueError("ACOUSTID_API_KEY not found in environment variables. Please set it in your .env file.")
 
 class VocalChopExtractor:
     def __init__(self, output_dir="output_chops"):
@@ -21,13 +30,11 @@ class VocalChopExtractor:
     def identify_song(self, audio_path):
         """Identify song using AcoustID"""
         try:
-            # Get API key from a placeholder
-            api_key = ''
             # Generate fingerprint
             duration, fingerprint = acoustid.fingerprint_file(audio_path)
             
             # Make API request with timeout
-            results = acoustid.lookup(api_key, fingerprint, duration, meta=['recordings', 'releases'])
+            results = acoustid.lookup(ACOUSTID_API_KEY, fingerprint, duration, meta=['recordings', 'releases'])
             
             if not results or 'results' not in results or not results['results']:
                 print("No results found from AcoustID")

@@ -12,7 +12,7 @@ A Python tool for creating usable vocal chops from a folder of songs.
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/chopsuey.git
+   git clone https://github.com/m/chopsuey.git
    cd chopsuey
    ```
 
@@ -55,4 +55,5 @@ Chopsuey processes audio files to extract vocal chops by:
 
 ## License
 
-MIT
+CC0 1.0 Universal
+

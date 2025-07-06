@@ -16,10 +16,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Get API key from environment variables
+# Get API key from environment variables (optional)
 ACOUSTID_API_KEY = os.getenv('ACOUSTID_API_KEY')
-if not ACOUSTID_API_KEY:
-    raise ValueError("ACOUSTID_API_KEY not found in environment variables. Please set it in your .env file.")
 
 class VocalChopExtractor:
     def __init__(self, output_dir="output_chops"):
@@ -28,7 +26,11 @@ class VocalChopExtractor:
         self.whisper_model = whisper.load_model("base")
 
     def identify_song(self, audio_path):
-        """Identify song using AcoustID"""
+        """Identify song using AcoustID (if API key is available)"""
+        if not ACOUSTID_API_KEY:
+            print("Warning: No AcoustID API key provided. Skipping song identification.")
+            return {'artist': 'Unknown', 'title': Path(audio_path).stem}
+            
         try:
             # Generate fingerprint
             duration, fingerprint = acoustid.fingerprint_file(audio_path)
@@ -133,7 +135,7 @@ class VocalChopExtractor:
             result = self.whisper_model.transcribe(
                 str(audio_path),
                 language="en",
-                word_timestamps=True,
+                without_timestamps=True,
                 fp16=False  # Disable FP16 on CPU
             )
             return result
@@ -211,6 +213,9 @@ class VocalChopExtractor:
         artist_folder = self.output_dir / f"{metadata['artist']} - {metadata['title']}"
         artist_folder.mkdir(exist_ok=True)
 
+        # Convert source_file to string if it's a Path object
+        source_file_str = str(source_file) if hasattr(source_file, '__fspath__') else source_file
+
         for i, chop in enumerate(chops):
             timestamp = f"{int(chop['start'])}s-{int(chop['end'])}s"
             safe_text = chop['text'][:20].replace(' ', '_').replace('/', '_')
@@ -225,7 +230,7 @@ class VocalChopExtractor:
             meta = {
                     'artist': metadata['artist'],
                     'song': metadata['title'],
-                    'source_file': source_file,
+                    'source_file': source_file_str,  # Use the string version here
                     'timestamp': timestamp,
                     'duration': chop['end'] - chop['start'],
                     'text': chop['text'],
